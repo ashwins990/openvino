@@ -99,13 +99,14 @@ endmacro()
 # Checks whether compiler for passed language supports SVE code compilation
 #
 
-macro(ov_check_compiler_supports_sve lang flags)
+macro(ov_check_compiler_supports_sve flags)
     # Code to compile
     set(SVE_CODE "
     #include <arm_sve.h>
     int main() {
         svfloat64_t a;
         a = svdup_n_f64(0);
+        (void)a; // to avoid warnings
         return 0;
     }")
 
@@ -113,33 +114,29 @@ macro(ov_check_compiler_supports_sve lang flags)
     set(CMAKE_REQUIRED_FLAGS_SAVE ${CMAKE_REQUIRED_FLAGS})
 
     # Set the flags necessary for compiling the test code with SVE support
-    set(CMAKE_REQUIRED_FLAGS "${CMAKE_${lang}_FLAGS_INIT} ${flags}")
+    set(CMAKE_REQUIRED_FLAGS "${CMAKE_CXX_FLAGS_INIT} ${flags}")
 
     # Check if the source code compiles with the given flags for the specified language (C or C++)
-    if(lang STREQUAL "CXX")
-        CHECK_CXX_SOURCE_COMPILES("${SVE_CODE}" ${lang}_HAS_SVE)            
-    else()
-        CHECK_C_SOURCE_COMPILES("${SVE_CODE}" ${lang}_HAS_SVE)
-    endif()
+    CHECK_CXX_SOURCE_COMPILES("${SVE_CODE}" CXX_HAS_SVE)            
 
     # If the compilation test is successful, set appropriate variables indicating support
-    if(${lang}_HAS_SVE)
-        set(${lang}_SVE_FOUND TRUE CACHE BOOL "SVE available on host")
-        set(${lang}_SVE_FOUND TRUE CACHE BOOL "${lang} SVE support")
-        set(${lang}_SVE_FLAGS "${flags}" CACHE STRING "${lang} SVE flags")
+    if(CXX_HAS_SVE)
+        set(CXX_SVE_FOUND TRUE CACHE BOOL "SVE available on host")
+        set(CXX_SVE_FOUND TRUE CACHE BOOL "CXX SVE support")
+        set(CXX_SVE_FLAGS "${flags}" CACHE STRING "CXX SVE flags")
     endif()
 
     # Restore the original state of required flags
     set(CMAKE_REQUIRED_FLAGS ${CMAKE_REQUIRED_FLAGS_SAVE})
 
     # If the compilation test fails, indicate that the support is not found
-    if(NOT ${lang}_SVE_FOUND)
-        set(${lang}_SVE_FOUND FALSE CACHE BOOL "${lang} SVE support")
-        set(${lang}_SVE_FLAGS "" CACHE STRING "${lang} SVE flags")
+    if(NOT CXX_SVE_FOUND)
+        set(CXX_SVE_FOUND FALSE CACHE BOOL "CXX SVE support")
+        set(CXX_SVE_FLAGS "" CACHE STRING "CXX SVE flags")
     endif()
 
     # Mark the variables as advanced to hide them in the default CMake GUI
-    mark_as_advanced(${lang}_SVE_FOUND ${lang}_SVE_FLAGS)
+    mark_as_advanced(CXX_SVE_FOUND CXX_SVE_FLAGS)
 endmacro()
 
 #
@@ -264,9 +261,8 @@ endmacro()
 #
 macro(ov_arm_sve_optimization_flags flags)
     # Check for compiler SVE support
-    ov_check_compiler_supports_sve(CXX "-march=armv8-a+sve")
-    ov_check_compiler_supports_sve(C "-march=armv8-a+sve")
-
+    ov_check_compiler_supports_sve("-march=armv8-a+sve")
+    
     if(OV_COMPILER_IS_INTEL_LLVM)
         message(WARNING "Unsupported CXX compiler ${CMAKE_CXX_COMPILER_ID}")
     elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
@@ -274,7 +270,7 @@ macro(ov_arm_sve_optimization_flags flags)
     elseif(ANDROID)
         if(ANDROID_ABI STREQUAL "arm64-v8a")
             set(${flags} -Wno-unused-command-line-argument)
-            if(CXX_SVE_FOUND AND C_SVE_FOUND)
+            if(CXX_SVE_FOUND)
                 list(APPEND ${flags} -march=armv8-a+sve)
             else()
                 message(WARNING "SVE is not supported on this Android ABI: ${ANDROID_ABI}")
@@ -287,7 +283,7 @@ macro(ov_arm_sve_optimization_flags flags)
             set(${flags} -O2)
 
             # Add flag for SVE if supported
-            if(CXX_SVE_FOUND AND C_SVE_FOUND)
+            if(CXX_SVE_FOUND)
                 list(APPEND ${flags} -march=armv8-a+sve)
             endif()
             if(NOT CMAKE_CL_64)
