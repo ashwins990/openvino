@@ -26,7 +26,8 @@ public:
                                     float alpha = 1.0f,
                                     float beta = 0.0f,
                                     arm_compute::Strides* outStrides = nullptr,
-                                    void* out = nullptr);
+                                    void* out = nullptr,
+                                    bool is_pa = false);
 
 private:
     size_t M = 0;

@@ -35,7 +35,8 @@ arm_compute::Status GemmKernel::executeGemm(void* a,
                                             float alpha,
                                             float beta,
                                             arm_compute::Strides* outStrides,
-                                            void* out) {
+                                            void* out,
+                                            bool is_pa) {
     aInfo.init(shapeCast({M, N}),
                format,
                aStrides,
@@ -62,13 +63,23 @@ arm_compute::Status GemmKernel::executeGemm(void* a,
         cTensor.allocator()->init(cInfo);
     }
 
-    if (outStrides != nullptr)
+    if (outStrides != nullptr){
+        if (is_pa)
+        dstInfo.init(
+            shapeCast({M, K}),
+            arm_compute::Format::F32,
+            *outStrides,
+            size_t(0),
+            (size_t)(M * K * arm_compute::element_size_from_data_type(arm_compute::data_type_from_format(arm_compute::Format::F32))));
+        else
         dstInfo.init(
             shapeCast({M, K}),
             format,
             *outStrides,
             size_t(0),
             (size_t)(M * K * arm_compute::element_size_from_data_type(arm_compute::data_type_from_format(format))));
+        
+    }
     else
         dstInfo.init(shapeCast({M, K}), format);
 
