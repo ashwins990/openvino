@@ -363,40 +363,40 @@ static void attn_acc_value_block(float* out,
         weight++;
     }
     return;
-// #    elif defined(HAVE_SVE)
-//     auto sve_pg = svptrue_b32();
-//     size_t j = 0;
-//     for (; j < block_size; ++j) {
-//         dst_offset = 0;
-//         src_offset = 0;
-//         while (dst_offset < S) {
-//             uint8_t* v_ptr = v + src_offset;
-//             uint8_t* v_data_ptr = v_ptr + params_offset;
-//             auto v_f0 = reinterpret_cast<float*>(v_ptr);
-//             svfloat32_t attn_w_vec0 = svdup_n_f32(weight[0] * v_f0[0]);
-//             svfloat32_t zp0 = svdup_n_f32(v_f0[1]);
-//             // svfloat32_t sc = svdup_n_f32(v0[0]);
-//             size_t i = 0;
-//             v += 8;
-//             for (; i + svcntw() < group_size; i += svcntw()) {
-//                 auto v_out = svld1_f32(sve_pg, out + dst_offset + i);
-//                 svuint32_t reg1  = svld1ub_u32(sve_pg, v_data_ptr + i);
-//                 svfloat32_t reg2 = svcvt_f32_u32_z(sve_pg, reg1);
-//                 svfloat32_t v0   = svsub_f32_z(sve_pg, reg2, zp0);
-//                 // svfloat32_t reg4 = svmul_f32_z(sve_pg, reg3, sc);
-//                 v_out = svmla_f32_x(sve_pg, v_out, attn_w_vec0, v0);
-//                 svst1_f32(sve_pg, out + dst_offset + i, v_out);
-//             }
-//             for (; i < group_size; i++) {
-//                 out[dst_offset + i] += weight[0] * (v_data_ptr[i] - v_f0[1]) * v_f0[0];
-//             }
-//             dst_offset += group_size;
-//             src_offset += group_size + params_offset;
-//         }
-//         v += src_stride;
-//         weight++;
-//     }
-//     return;
+#    elif defined(HAVE_SVE)
+    auto sve_pg = svptrue_b32();
+    size_t j = 0;
+    for (; j < block_size; ++j) {
+        dst_offset = 0;
+        src_offset = 0;
+        while (dst_offset < S) {
+            uint8_t* v_ptr = v + src_offset;
+            uint8_t* v_data_ptr = v_ptr + params_offset;
+            auto v_f0 = reinterpret_cast<float*>(v_ptr);
+            svfloat32_t attn_w_vec0 = svdup_n_f32(weight[0] * v_f0[0]);
+            svfloat32_t zp0 = svdup_n_f32(v_f0[1]);
+            // svfloat32_t sc = svdup_n_f32(v0[0]);
+            size_t i = 0;
+            // v += 8;
+            for (; i + svcntw() < group_size; i += svcntw()) {
+                auto v_out = svld1_f32(sve_pg, out + dst_offset + i);
+                svuint32_t reg1  = svld1ub_u32(sve_pg, v_data_ptr + i);
+                svfloat32_t reg2 = svcvt_f32_u32_z(sve_pg, reg1);
+                svfloat32_t v0   = svsub_f32_z(sve_pg, reg2, zp0);
+                // svfloat32_t reg4 = svmul_f32_z(sve_pg, reg3, sc);
+                v_out = svmla_f32_x(sve_pg, v_out, attn_w_vec0, v0);
+                svst1_f32(sve_pg, out + dst_offset + i, v_out);
+            }
+            for (; i < group_size; i++) {
+                out[dst_offset + i] += weight[0] * (v_data_ptr[i] - v_f0[1]) * v_f0[0];
+            }
+            dst_offset += group_size;
+            src_offset += group_size + params_offset;
+        }
+        v += src_stride;
+        weight++;
+    }
+    return;
 #    endif
     for (size_t j = 0; j < block_size; j++) {
         dst_offset = 0;
@@ -844,37 +844,50 @@ static void dot_product_block(TA* a,
         *c++ = sum;
     }
     return;
-// #    elif defined(HAVE_SVE)
-// // TODO : rewrite with new logic
-//     auto pg_a = svptrue_b32();
-//     size_t j = 0;
-//     for (; j < block_size; j++) {
-//         auto vsum = svdup_n_f32(0.0f);
-//         auto b0 = reinterpret_cast<float*>(b);
-//         auto v_zp = svdup_n_f32(b0[1]);
-//         size_t i = 0;
-//         b += 8;
-//         SVE_VLEN(vlen, TA)
-//         // auto svlen_a = sv_get_vlen(a[0]);
-//         for(; i + vlen < n ; i += vlen){
-//             svfloat32_t va;
-//             if constexpr(std::is_same<TA, ov::float16>::value){
-//                 va = svcvt_f32_f16_z(pg_a, svld1(pg_a, reinterpret_cast<float16_t*>(a + i)));
-//             } else {
-//                 va = svld1(pg_a, a + i);
-//             }
-//             auto r1 = svcvt_f32_u32_z(pg_a, svld1ub_u32(pg_a, b + i));
-//             auto vb = svsub_f32_z(pg_a, r1, v_zp);
-//             vsum    = svmla_f32_m(pg_a, vsum, va, vb); 
-//         }
-//         auto sum = svaddv_f32(pg_a, vsum);
-//         for (; i < n; i++) {
-//             sum += a[i] * (b[i] - b0[1]);
-//         }
-//         b += n;
-//         *c++ = sum * b0[0];
-//     }
-//     return;
+#    elif defined(HAVE_SVE)
+// TODO : rewrite with new logic
+    auto pg_a = svptrue_b32();
+    auto pg_f16 = svwhilelt_b16(svcnth() / 2, svcnth());
+    auto scratch  = svdup_f16_x(svptrue_b16(), 0);
+    size_t j = 0;
+    for (; j < block_size; j++) {
+        src_offset = 0;
+        dst_offset = 0;
+        float sum = 0;
+        while (dst_offset < n){
+            auto vsum = svdup_n_f32(0.0f);
+            auto b0 = reinterpret_cast<float*>(b + src_offset);
+            auto v_zp = svdup_n_f32(b0[1]);
+            size_t i = 0;
+            uint8_t* b_data_ptr = b + src_offset + params_offset;
+            auto vlen = svcntw();
+            for(; i + vlen <= group_size ; i += vlen){
+                svfloat32_t va;
+                if constexpr(std::is_same<TA, ov::float16>::value){
+                    auto load_src       = svld1_f16(pg_f16, reinterpret_cast<float16_t*>(a + dst_offset + i));
+                    auto src_interleave = svzip1_f16(load_src, scratch);
+                    va                  = svcvt_f32_f16_z(pg_a, src_interleave);
+
+                    // va = svcvt_f32_f16_z(pg_a, svld1(pg_f16, reinterpret_cast<float16_t*>(a + dst_offset + i)));
+                } else {
+                    va = svld1(pg_a, a + dst_offset + i);
+                }
+                auto r1 = svcvt_f32_u32_z(pg_a, svld1ub_u32(pg_a, b_data_ptr + i));
+                auto vb = svsub_f32_z(pg_a, r1, v_zp);
+                vsum    = svmla_f32_m(pg_a, vsum, va, vb); 
+            }
+            float group_sum = svaddv_f32(pg_a, vsum);
+            for (; i < group_size; i++) {
+                group_sum += a[i + dst_offset] * (b_data_ptr[i] - b0[1]);
+            }
+            sum += group_sum * b0[0];
+            dst_offset += group_size;
+            src_offset += group_size + params_offset;
+        }
+        b += src_stride;
+        *c++ = sum;
+    }
+    return;
 #    endif
     for (size_t j = 0; j < block_size; j++) {
         float sum = 0;
