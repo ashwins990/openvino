@@ -665,7 +665,7 @@ inline void transpose_8x16_kernel(float16_t* dst, float16_t* src, size_t dst_str
     svst1_f64(pgh, reinterpret_cast<float64_t*>(dst + dst_stride * 15) -2, h2);
 }
 
-inline void transpose_16x16_kernel1(float16_t* dst, float16_t* src, size_t dst_stride, size_t src_stride){
+inline void transpose_16x16_kernel(float16_t* dst, float16_t* src, size_t dst_stride, size_t src_stride){
     transpose_8x16_kernel(dst, src, dst_stride, src_stride);
     transpose_8x16_kernel(dst + 8, src + 128 , dst_stride, src_stride);
 }
