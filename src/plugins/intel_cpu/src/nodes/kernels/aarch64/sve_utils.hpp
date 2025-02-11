@@ -72,3 +72,31 @@ static void cvt_copy(float16_t* dst, float* src, int n){
         }  
 
 }
+
+void inline gemm_acl_ref(float16_t* a, float16_t* b, float16_t* c, size_t m, size_t n, size_t k, size_t lda, size_t ldb, size_t ldc, bool acc){
+    size_t vlen = svcnth();
+    auto pg = svptrue_b16();
+    
+    for(size_t i = 0; i < m; ++i ){
+
+        for(size_t j = 0; j < n ; j += 1){
+
+            auto vsum = svdup_n_f16_z(pg, 0.0);
+
+            for(size_t x = 0; x + vlen <= k ; x += vlen){
+
+                auto a1 = svld1(pg, a + x + i * lda);
+                auto b1 = svld1(pg, b + x + j * ldb);
+                vsum = svmla_f16_z(pg, vsum, a1, b1);
+
+            }
+            if(acc)
+                *(c + j) =  *(c + j) + svaddv_f16(pg, vsum);
+            else
+                *(c + j) =  svaddv_f16(pg, vsum);
+
+        }
+        c += ldc; 
+    }
+
+}

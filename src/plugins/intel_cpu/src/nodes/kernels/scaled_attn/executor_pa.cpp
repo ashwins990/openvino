@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 #include <float.h>
-
+// #define HAVE_SVE
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -1018,6 +1018,43 @@ void transpose_16NxK(TDST* dst,
     // |scale(f32)|zeropoint(f32)|quantized feature(u8,idx_1)|quantized feature(u8,idx_2)|...|quantized
     // feature(u8,idx_S)| The quantized feature will start from 8bytes=sizeof(float)+sizeof(float)
     auto s = reinterpret_cast<typename ov::element_type_traits<SRC_PREC>::value_type*>(src);
+    auto t = dst;
+    // if group_size not set, the whole row is used as a group
+    for (size_t n = 0; n < N; n++) {
+        size_t src_offset = 0;
+        size_t dst_offset = 0;
+        while (dst_offset < K) {
+            auto f = reinterpret_cast<float*>(s + src_offset);
+            attn_dequant_kernel<TDST, SRC_PREC>(s + src_offset + sizeof(float) * 2,
+                                                t + dst_offset,
+                                                group_size,
+                                                f[0],
+                                                f[1]);
+            src_offset += group_size + sizeof(float) * 2;
+            dst_offset += group_size;
+        }
+        s += src_offset;
+        t += src_stride;
+    }
+    // dst = tmp;
+    // transpose_16NxK<TDST,
+    //                 precision_of<TDST>::value>(dst, tmp, reinterpret_cast<TDST*>(0), N, K, dst_stride, src_stride, 0);
+}
+template <typename TDST,
+          ov::element::Type_t SRC_PREC,
+          typename std::enable_if<SRC_PREC == ov::element::u8, bool>::type = true>
+void transpose_16NxK_temp(TDST* dst,
+                     void* src,
+                     TDST* tmp,
+                     const size_t N,
+                     const size_t K,
+                     const size_t dst_stride,
+                     const size_t src_stride,
+                     const size_t group_size) {
+    // The layout for per token per head:
+    // |scale(f32)|zeropoint(f32)|quantized feature(u8,idx_1)|quantized feature(u8,idx_2)|...|quantized
+    // feature(u8,idx_S)| The quantized feature will start from 8bytes=sizeof(float)+sizeof(float)
+    auto s = reinterpret_cast<typename ov::element_type_traits<SRC_PREC>::value_type*>(src);
     auto t = tmp;
     // if group_size not set, the whole row is used as a group
     for (size_t n = 0; n < N; n++) {
@@ -1538,7 +1575,7 @@ struct MHAHelper {
 
     void init_reorder_buffers(size_t batch, size_t kv_len_in_blocks) {
         _qk_scratch_b.resize<DATA_TYPE>({batch, kv_len_in_blocks, _Hk, _block_size * _S});
-        _wv_scratch_b.resize<DATA_TYPE>({batch, kv_len_in_blocks, _Hk, _block_size * rnd_up(_SV, _block_size)});
+        _wv_scratch_b.resize<DATA_TYPE>({batch, kv_len_in_blocks, _Hk, _block_size * _SV});
     }
 
     void init_score_buffers(const PlainTensor& past_lens, const PlainTensor& subsequence_begins) {
@@ -1611,26 +1648,37 @@ struct MHAHelper {
             for (size_t k_blk = 0; k_blk < cur_kv_len_blocks; k_blk++) {
                 auto* k_ptr = qk_scratch_b.ptr<DATA_TYPE>(k_blk, hk);
 
-                GemmKernel _qk_gemm_acl(q_cnt,
-                                        _S,
-                                        _block_size,
-                                        false,
-                                        precision_of<DATA_TYPE>::value);
+                // GemmKernel _qk_gemm_acl(q_cnt,
+                //                         _S,
+                //                         _block_size,
+                //                         false,
+                //                         precision_of<DATA_TYPE>::value);
 
-                _qk_gemm_acl.executeGemm(
-                                        reinterpret_cast<void *>(q_ptr),
-                                        reinterpret_cast<void *>(k_ptr),
-                                        dstInfo,
-                                        dstTensor,
-                                        qStrides,
-                                        kStrides,
-                                        nullptr,
-                                        1.0f,
-                                        0.0f,
-                                        &wStrides,
-                                        reinterpret_cast<void*>(c_ptr + k_blk * _block_size / 2),
-                                        false
-                                    );
+                // _qk_gemm_acl.executeGemm(
+                //                         reinterpret_cast<void *>(q_ptr),
+                //                         reinterpret_cast<void *>(k_ptr),
+                //                         dstInfo,
+                //                         dstTensor,
+                //                         qStrides,
+                //                         kStrides,
+                //                         nullptr,
+                //                         1.0f,
+                //                         0.0f,
+                //                         &wStrides,
+                //                         reinterpret_cast<void*>(c_ptr + k_blk * _block_size / 2),
+                //                         false
+                //                     );
+                gemm_acl_ref(reinterpret_cast<float16_t*>(q_ptr),
+                     reinterpret_cast<float16_t*>(k_ptr),
+                     reinterpret_cast<float16_t*>(c_ptr + k_blk * _block_size / 2),
+                     q_cnt,
+                     _block_size,
+                     _S,
+                     _H * _S,
+                     _S,
+                     wStride / 2,
+                     false
+                     );
             }
 
             for (size_t m = q_start; m < q_end; m++) {
@@ -1701,46 +1749,68 @@ struct MHAHelper {
                     v_ptr = present_value.ptr<DATA_TYPE>(block_table[v_blk], hk);
                 }
                 if (v_blk == 0) {
-                    GemmKernel _wv_gemm_acl(q_cnt,
-                                            _block_size,
-                                            _SV,
-                                            false,
-                                            precision_of<DATA_TYPE>::value);
-                    _wv_gemm_acl.executeGemm(
-                                            reinterpret_cast<void *>(w_ptr + v_blk * _block_size),
-                                            reinterpret_cast<void *>(v_ptr),
-                                            dstInfo,
-                                            dstTensor,
-                                            wStrides,
-                                            vStrides,
-                                            nullptr,
-                                            1.0f,
-                                            0.0f,
-                                            &outStrides,
-                                            reinterpret_cast<void*>(fp32_out_ptr),
-                                            false
-                                            );
+                    // GemmKernel _wv_gemm_acl(q_cnt,
+                    //                         _block_size,
+                    //                         _SV,
+                    //                         false,
+                    //                         precision_of<DATA_TYPE>::value);
+                    // _wv_gemm_acl.executeGemm(
+                    //                         reinterpret_cast<void *>(w_ptr + v_blk * _block_size),
+                    //                         reinterpret_cast<void *>(v_ptr),
+                    //                         dstInfo,
+                    //                         dstTensor,
+                    //                         wStrides,
+                    //                         vStrides,
+                    //                         nullptr,
+                    //                         1.0f,
+                    //                         0.0f,
+                    //                         &outStrides,
+                    //                         reinterpret_cast<void*>(fp32_out_ptr),
+                    //                         false
+                    //                         );
+                    gemm_acl_ref(   reinterpret_cast<float16_t*>(w_ptr + v_blk * _block_size),
+                                    reinterpret_cast<float16_t*>(v_ptr),
+                                    reinterpret_cast<float16_t*>(fp32_out_ptr),
+                                    q_cnt,
+                                    _SV,
+                                    _block_size,
+                                    wStride / 2,
+                                    _block_size,
+                                    _H * _SV,
+                                    false
+                                    );
                 } else {
-                    GemmKernel _wv_gemm_acc_acl(q_cnt,
-                                                _block_size,
-                                                _SV,
-                                                false,
-                                                precision_of<DATA_TYPE>::value
-                                                );
-                    _wv_gemm_acc_acl.executeGemm(
-                                                reinterpret_cast<void *>(w_ptr + v_blk * _block_size),
-                                                reinterpret_cast<void *>(v_ptr),
-                                                dstInfo,
-                                                dstTensor,
-                                                wStrides,
-                                                vStrides,
-                                                nullptr,
-                                                1.0f,
-                                                1.0f,
-                                                &outStrides,
-                                                reinterpret_cast<void*>(fp32_out_ptr),
-                                                false
-                                            );
+                    // GemmKernel _wv_gemm_acc_acl(q_cnt,
+                    //                             _block_size,
+                    //                             _SV,
+                    //                             false,
+                    //                             precision_of<DATA_TYPE>::value
+                    //                             );
+                    // _wv_gemm_acc_acl.executeGemm(
+                    //                             reinterpret_cast<void *>(w_ptr + v_blk * _block_size),
+                    //                             reinterpret_cast<void *>(v_ptr),
+                    //                             dstInfo,
+                    //                             dstTensor,
+                    //                             wStrides,
+                    //                             vStrides,
+                    //                             nullptr,
+                    //                             1.0f,
+                    //                             1.0f,
+                    //                             &outStrides,
+                    //                             reinterpret_cast<void*>(fp32_out_ptr),
+                    //                             false
+                    //                         );
+                    gemm_acl_ref(   reinterpret_cast<float16_t*>(w_ptr + v_blk * _block_size),
+                                    reinterpret_cast<float16_t*>(v_ptr),
+                                    reinterpret_cast<float16_t*>(fp32_out_ptr),
+                                    q_cnt,
+                                    _SV,
+                                    _block_size,
+                                    wStride / 2,
+                                    _block_size,
+                                    _H * _SV,
+                                    true
+                                    );
                 }
             }
         }
@@ -2361,12 +2431,21 @@ struct MHA {
                     size_t v_stride = (block_number * v_cache.m_strides[0] + hk * v_cache.m_strides[1]) *
                                       v_cache.get_precision().size() / sub_byte_multiplier;
                     auto* v_ptr = v_cache.m_ptr.get() + v_stride;
-                    dequant<DATA_TYPE, VALUE_PREC>(
-                        _helper._wv_scratch_b.template ptr<DATA_TYPE>(batch_in_reorder, kv_block, hk),
-                        v_ptr,
-                        _helper._block_size,
-                        _helper._SV,
-                        _helper._value_group_size);
+                    // dequant<DATA_TYPE, VALUE_PREC>(
+                    //     _helper._wv_scratch_b.template ptr<DATA_TYPE>(batch_in_reorder, kv_block, hk),
+                    //     v_ptr,
+                    //     _helper._block_size,
+                    //     _helper._SV,
+                    //     _helper._value_group_size);
+                    transpose_16NxK_temp<DATA_TYPE, precision_of<KEY_CACHE_TYPE>::value>(
+                            _helper._wv_scratch_b.template ptr<DATA_TYPE>(batch_in_reorder, kv_block, hk),
+                            v_ptr,
+                            _helper._output.template ptr<DATA_TYPE>(ithr),
+                            _helper._block_size,
+                            _helper._SV,
+                            _helper._block_size,
+                            _helper._SV,
+                            _helper._value_group_size);
                 }
             // }
         });
