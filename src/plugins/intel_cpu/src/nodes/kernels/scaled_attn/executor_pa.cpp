@@ -1668,17 +1668,29 @@ struct MHAHelper {
                 //                         reinterpret_cast<void*>(c_ptr + k_blk * _block_size / 2),
                 //                         false
                 //                     );
-                gemm_acl_ref(reinterpret_cast<float16_t*>(q_ptr),
-                     reinterpret_cast<float16_t*>(k_ptr),
-                     reinterpret_cast<float16_t*>(c_ptr + k_blk * _block_size / 2),
-                     q_cnt,
-                     _block_size,
-                     _S,
-                     _H * _S,
-                     _S,
-                     wStride / 2,
-                     false
-                     );
+                
+                // gemm_acl_ref(reinterpret_cast<float16_t*>(q_ptr),
+                //      reinterpret_cast<float16_t*>(k_ptr),
+                //      reinterpret_cast<float16_t*>(c_ptr + k_blk * _block_size / 2),
+                //      q_cnt,
+                //      _block_size,
+                //      _S,
+                //      _H * _S,
+                //      _S,
+                //      wStride / 2,
+                //      false
+                //      );
+                gemm_qk(reinterpret_cast<float16_t*>(q_ptr),
+                reinterpret_cast<float16_t*>(k_ptr),
+                reinterpret_cast<float16_t*>(c_ptr + k_blk * _block_size / 2),
+                q_cnt,
+                _block_size,
+                _S,
+                _H * _S,
+                _S,
+                wStride / 2,
+                false
+                );
             }
 
             for (size_t m = q_start; m < q_end; m++) {
@@ -1768,17 +1780,28 @@ struct MHAHelper {
                     //                         reinterpret_cast<void*>(fp32_out_ptr),
                     //                         false
                     //                         );
-                    gemm_acl_ref(   reinterpret_cast<float16_t*>(w_ptr + v_blk * _block_size),
-                                    reinterpret_cast<float16_t*>(v_ptr),
-                                    reinterpret_cast<float16_t*>(fp32_out_ptr),
-                                    q_cnt,
-                                    _SV,
-                                    _block_size,
-                                    wStride / 2,
-                                    _block_size,
-                                    _H * _SV,
-                                    false
-                                    );
+                    // gemm_acl_ref(   reinterpret_cast<float16_t*>(w_ptr + v_blk * _block_size),
+                    //                 reinterpret_cast<float16_t*>(v_ptr),
+                    //                 reinterpret_cast<float16_t*>(fp32_out_ptr),
+                    //                 q_cnt,
+                    //                 _SV,
+                    //                 _block_size,
+                    //                 wStride / 2,
+                    //                 _block_size,
+                    //                 _H * _SV,
+                    //                 false
+                    //                 );
+                    gemm_wv(   reinterpret_cast<float16_t*>(w_ptr + v_blk * _block_size),
+                    reinterpret_cast<float16_t*>(v_ptr),
+                    reinterpret_cast<float16_t*>(fp32_out_ptr),
+                    q_cnt,
+                    _SV,
+                    _block_size,
+                    wStride / 2,
+                    _block_size,
+                    _H * _SV,
+                    false
+                    );
                 } else {
                     // GemmKernel _wv_gemm_acc_acl(q_cnt,
                     //                             _block_size,
@@ -1800,17 +1823,28 @@ struct MHAHelper {
                     //                             reinterpret_cast<void*>(fp32_out_ptr),
                     //                             false
                     //                         );
-                    gemm_acl_ref(   reinterpret_cast<float16_t*>(w_ptr + v_blk * _block_size),
-                                    reinterpret_cast<float16_t*>(v_ptr),
-                                    reinterpret_cast<float16_t*>(fp32_out_ptr),
-                                    q_cnt,
-                                    _SV,
-                                    _block_size,
-                                    wStride / 2,
-                                    _block_size,
-                                    _H * _SV,
-                                    true
-                                    );
+                    // gemm_acl_ref(   reinterpret_cast<float16_t*>(w_ptr + v_blk * _block_size),
+                    //                 reinterpret_cast<float16_t*>(v_ptr),
+                    //                 reinterpret_cast<float16_t*>(fp32_out_ptr),
+                    //                 q_cnt,
+                    //                 _SV,
+                    //                 _block_size,
+                    //                 wStride / 2,
+                    //                 _block_size,
+                    //                 _H * _SV,
+                    //                 true
+                    //                 );
+                    gemm_wv(   reinterpret_cast<float16_t*>(w_ptr + v_blk * _block_size),
+                    reinterpret_cast<float16_t*>(v_ptr),
+                    reinterpret_cast<float16_t*>(fp32_out_ptr),
+                    q_cnt,
+                    _SV,
+                    _block_size,
+                    wStride / 2,
+                    _block_size,
+                    _H * _SV,
+                    true
+                    );
                 }
             }
         }
@@ -2394,7 +2428,7 @@ struct MHA {
             auto ithr = parallel_get_thread_num();
             auto* k_ptr = k_cache.ptr<KEY_CACHE_TYPE>(block_number, hk);
 
-            transpose_16NxK<DATA_TYPE, precision_of<KEY_CACHE_TYPE>::value>(
+            transpose_16NxK_temp<DATA_TYPE, precision_of<KEY_CACHE_TYPE>::value>(
                 _helper._qk_scratch_b.template ptr<DATA_TYPE>(batch_in_reorder, kv_block, hk),
                 k_ptr,
                 _helper._output.template ptr<DATA_TYPE>(ithr),
@@ -2431,21 +2465,21 @@ struct MHA {
                     size_t v_stride = (block_number * v_cache.m_strides[0] + hk * v_cache.m_strides[1]) *
                                       v_cache.get_precision().size() / sub_byte_multiplier;
                     auto* v_ptr = v_cache.m_ptr.get() + v_stride;
-                    // dequant<DATA_TYPE, VALUE_PREC>(
-                    //     _helper._wv_scratch_b.template ptr<DATA_TYPE>(batch_in_reorder, kv_block, hk),
-                    //     v_ptr,
-                    //     _helper._block_size,
-                    //     _helper._SV,
-                    //     _helper._value_group_size);
-                    transpose_16NxK_temp<DATA_TYPE, precision_of<KEY_CACHE_TYPE>::value>(
-                            _helper._wv_scratch_b.template ptr<DATA_TYPE>(batch_in_reorder, kv_block, hk),
-                            v_ptr,
-                            _helper._output.template ptr<DATA_TYPE>(ithr),
-                            _helper._block_size,
-                            _helper._SV,
-                            _helper._block_size,
-                            _helper._SV,
-                            _helper._value_group_size);
+                    dequant<DATA_TYPE, VALUE_PREC>(
+                        _helper._wv_scratch_b.template ptr<DATA_TYPE>(batch_in_reorder, kv_block, hk),
+                        v_ptr,
+                        _helper._block_size,
+                        _helper._SV,
+                        _helper._value_group_size);
+                    // transpose_16NxK_temp<DATA_TYPE, precision_of<KEY_CACHE_TYPE>::value>(
+                    //         _helper._wv_scratch_b.template ptr<DATA_TYPE>(batch_in_reorder, kv_block, hk),
+                    //         v_ptr,
+                    //         _helper._output.template ptr<DATA_TYPE>(ithr),
+                    //         _helper._block_size,
+                    //         _helper._SV,
+                    //         _helper._block_size,
+                    //         _helper._SV,
+                    //         _helper._value_group_size);
                 }
             // }
         });
@@ -2516,7 +2550,7 @@ struct MHA {
                 sub_query.resize({q_len, _helper._H, _helper._S}, q.ptr<DATA_TYPE>(batch_in_token));
                 sub_query = sub_query.permute({1, 0, 2});
 #if defined(OPENVINO_ARCH_ARM64)
-                // if constexpr (std::is_same<DATA_TYPE, ov::float16>::value){
+                if constexpr (std::is_same<DATA_TYPE, ov::float16>::value){
                     _helper.exec_kernel_multiple_acl(
                         sub_query,
                         v_cache,
@@ -2534,26 +2568,26 @@ struct MHA {
                         cur_kv_len,
                         alibi_slopes,
                         score_output);
-                // }
-                // if constexpr (std::is_same<DATA_TYPE, float>::value){
-                //      _helper.exec_kernel_multiple(
-                //         sub_query,
-                //         v_cache,
-                //         output_emb.slice(0, batch_in_token, batch_in_token + q_len)
-                //             .reshape({q_len, _helper._H * _helper._SV}),
-                //         _helper._qk_scratch_b.slice(0, batch_in_reorder, batch_in_reorder),
-                //         _helper._wv_scratch_b.slice(0, batch_in_reorder, batch_in_reorder),
-                //         block_indices.ptr<int32_t>() + block_indices_begins.ptr<int32_t>()[batch_in_seq],
-                //         ithr,
-                //         q_blk,
-                //         hq_beg,
-                //         hq_end,
-                //         hk,
-                //         q_len,
-                //         cur_kv_len,
-                //         alibi_slopes,
-                //         score_output);
-                // }
+                }
+                if constexpr (std::is_same<DATA_TYPE, float>::value){
+                     _helper.exec_kernel_multiple(
+                        sub_query,
+                        v_cache,
+                        output_emb.slice(0, batch_in_token, batch_in_token + q_len)
+                            .reshape({q_len, _helper._H * _helper._SV}),
+                        _helper._qk_scratch_b.slice(0, batch_in_reorder, batch_in_reorder),
+                        _helper._wv_scratch_b.slice(0, batch_in_reorder, batch_in_reorder),
+                        block_indices.ptr<int32_t>() + block_indices_begins.ptr<int32_t>()[batch_in_seq],
+                        ithr,
+                        q_blk,
+                        hq_beg,
+                        hq_end,
+                        hk,
+                        q_len,
+                        cur_kv_len,
+                        alibi_slopes,
+                        score_output);
+                }
 #else
                 _helper.exec_kernel_multiple(
                     sub_query,
